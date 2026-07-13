@@ -101,6 +101,9 @@ default_master = r"c:\ISN CODING\ISN Survey\Data_for_AG\Survey 2022-2025 Data So
 default_raw = r"c:\ISN CODING\ISN Survey\Data_for_AG\2026 ISN PART 1_ Athletes and Coaches Satisfaction Survey on Sports Science & Sports Medicine Services (Responses).xlsx"
 is_local_mode = os.path.exists(default_master)
 
+if 'local_master_path' not in st.session_state:
+    st.session_state.local_master_path = default_master
+
 # Sidebar - Settings and Instructions
 with st.sidebar:
     st.image("https://img.icons8.com/color/144/null/survey.png", width=72)
@@ -108,7 +111,33 @@ with st.sidebar:
     
     if is_local_mode:
         st.markdown("### 💻 Running in Local Mode")
-        master_path_input = st.text_input("Target Master Database Path:", value=default_master)
+        
+        # Open explorer helper
+        def choose_file_via_explorer():
+            try:
+                import tkinter as tk
+                from tkinter import filedialog
+                root = tk.Tk()
+                root.withdraw()
+                root.attributes('-topmost', True)
+                file_path = filedialog.askopenfilename(
+                    title="Select Master Database Excel File",
+                    filetypes=[("Excel Files", "*.xlsx;*.xls")]
+                )
+                root.destroy()
+                return file_path
+            except Exception as e:
+                st.error(f"Could not open file explorer: {e}")
+                return None
+                
+        if st.button("📁 Choose Master File"):
+            path = choose_file_via_explorer()
+            if path:
+                st.session_state.local_master_path = path
+                st.rerun()
+                
+        master_path_input = st.text_input("Target Master Database Path:", value=st.session_state.local_master_path)
+        st.session_state.local_master_path = master_path_input
     else:
         st.markdown("### ☁️ Running in Cloud Mode")
         st.info("Files will be processed in-memory. Please upload both the Raw Survey and Historical Master files.")
