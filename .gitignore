@@ -1,0 +1,25 @@
+# Exclude raw survey data (contains sensitive PII like email addresses and raw athlete/coach feedback)
+Data_for_AG/
+*.xlsx
+*.xls
+*.csv
+
+# Python cache & temporary files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+env/
+venv/
+.venv/
+pip-log.txt
+pip-delete-this-directory.txt
+.ipynb_checkpoints/
+
+# System files
+.DS_Store
+Thumbs.db
+
+# Temp files
+temp_out.txt
