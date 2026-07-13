@@ -6,6 +6,7 @@ import pandas as pd
 import numpy as np
 import streamlit as st
 import datetime
+import io
 
 # Page configuration
 st.set_page_config(
@@ -95,38 +96,41 @@ if 'med_unpiv_preview' not in st.session_state:
 if 'raw_preview' not in st.session_state:
     st.session_state.raw_preview = None
 
+# Check if running locally (default path exists)
+default_master = r"c:\ISN CODING\ISN Survey\Data_for_AG\Survey 2022-2025 Data Source.xlsx"
+default_raw = r"c:\ISN CODING\ISN Survey\Data_for_AG\2026 ISN PART 1_ Athletes and Coaches Satisfaction Survey on Sports Science & Sports Medicine Services (Responses).xlsx"
+is_local_mode = os.path.exists(default_master)
+
 # Sidebar - Settings and Instructions
 with st.sidebar:
     st.image("https://img.icons8.com/color/144/null/survey.png", width=72)
     st.markdown("<h2 style='color: #1E3A8A; font-family: Outfit;'>Configuration</h2>", unsafe_allow_html=True)
     
-    st.markdown("### Default File Paths")
-    default_master = r"c:\ISN CODING\ISN Survey\Data_for_AG\Survey 2022-2025 Data Source.xlsx"
-    default_raw = r"c:\ISN CODING\ISN Survey\Data_for_AG\2026 ISN PART 1_ Athletes and Coaches Satisfaction Survey on Sports Science & Sports Medicine Services (Responses).xlsx"
-    
-    master_path_input = st.text_input("Target Master Database Path:", value=default_master)
-    
+    if is_local_mode:
+        st.markdown("### 💻 Running in Local Mode")
+        master_path_input = st.text_input("Target Master Database Path:", value=default_master)
+    else:
+        st.markdown("### ☁️ Running in Cloud Mode")
+        st.info("Files will be processed in-memory. Please upload both the Raw Survey and Historical Master files.")
+        master_path_input = None
+        
     st.markdown("---")
     st.markdown("### How to Use")
     st.markdown("""
     1. **Upload** the newly received 2026 raw responses Excel file.
-    2. Check the **Data Previews** and verify metadata.
+    2. *Cloud Mode*: **Upload** the Historical Master database.
     3. Click **Run Validation (Dry Run)** to check parsing and preview output datasets.
     4. Review generated charts and counts.
-    5. Click **Process & Append to Master Database** to write data. A backup file will automatically be created.
+    5. Click **Process & Append** to prepare the final Excel file.
+    6. Download the updated database!
     """)
     
     st.markdown("---")
-    st.markdown("<div style='font-size: 0.8rem; color: #64748B;'>ISN Survey Automation Tool v1.0<br>© National Sports Institute of Malaysia</div>", unsafe_allow_html=True)
+    st.markdown("<div style='font-size: 0.8rem; color: #64748B;'>ISN Survey Automation Tool v1.1<br>© National Sports Institute of Malaysia</div>", unsafe_allow_html=True)
 
 # Main Dashboard Title
 st.markdown("<h1 class='main-title'>ISN Survey Data Integration Hub</h1>", unsafe_allow_html=True)
 st.markdown("<p class='subtitle'>Streamlined cleaning, unpivoting, and appending for Sports Science & Sports Medicine satisfaction survey data</p>", unsafe_allow_html=True)
-
-# Step 1: Upload raw responses
-st.markdown("<div class='section-header'>Step 1: Upload Raw 2026 Responses</div>", unsafe_allow_html=True)
-
-uploaded_file = st.file_uploader("Choose the 2026 Raw Responses Excel File (.xlsx)", type=["xlsx"])
 
 # Clean values helper
 def clean_val(val, split_slash=True, age_normalize=False):
@@ -157,6 +161,17 @@ def get_true_max_row(ws, check_col=1):
         if ws.cell(row=r, column=check_col).value is not None:
             return r
     return 1
+
+# Safe file pointer reset and read helpers
+def load_wb_safely(source):
+    if hasattr(source, "seek"):
+        source.seek(0)
+    return openpyxl.load_workbook(source)
+
+def load_xls_safely(source):
+    if hasattr(source, "seek"):
+        source.seek(0)
+    return pd.ExcelFile(source)
 
 # Define service maps
 spsc_services = [
@@ -191,10 +206,15 @@ q_cols = [
     "Equipment Quality"
 ]
 
-if uploaded_file is not None:
+# Step 1: Upload raw responses
+st.markdown("<div class='section-header'>Step 1: Upload Raw 2026 Responses</div>", unsafe_allow_html=True)
+
+uploaded_raw_file = st.file_uploader("Choose the 2026 Raw Responses Excel File (.xlsx)", type=["xlsx"])
+
+if uploaded_raw_file is not None:
     try:
         # Load Raw file
-        df_raw = pd.read_excel(uploaded_file)
+        df_raw = pd.read_excel(uploaded_raw_file)
         st.session_state.raw_preview = df_raw
         
         # Display Upload Metadata Cards
@@ -216,7 +236,6 @@ if uploaded_file is not None:
         with col3:
             min_ts = df_raw.iloc[:, 0].min()
             max_ts = df_raw.iloc[:, 0].max()
-            # Handle date format nicely
             min_ts_str = pd.to_datetime(min_ts).strftime('%Y-%m-%d') if pd.notna(min_ts) else "N/A"
             max_ts_str = pd.to_datetime(max_ts).strftime('%Y-%m-%d') if pd.notna(max_ts) else "N/A"
             st.markdown(f"""
@@ -232,11 +251,11 @@ if uploaded_file is not None:
             st.dataframe(df_raw.head(5))
             
     except Exception as e:
-        st.error(f"Error loading uploaded file: {e}")
+        st.error(f"Error loading raw file: {e}")
 
 else:
-    # If no file uploaded, check if the default raw file is present locally
-    if os.path.exists(default_raw):
+    # If no file uploaded and running locally, load default file
+    if is_local_mode and os.path.exists(default_raw):
         st.info(f"Using default local raw responses file at: `{default_raw}`")
         if st.button("Load Default 2026 responses file"):
             try:
@@ -248,23 +267,38 @@ else:
     else:
         st.warning("Please upload a 2026 Raw Responses file to begin.")
 
-# Check if target master database exists
-st.markdown("<div class='section-header'>Step 2: Master Database Status</div>", unsafe_allow_html=True)
-if os.path.exists(master_path_input):
-    st.success(f"Master Database detected at: `{master_path_input}`")
+# Step 2: Upload or detect Master Database
+st.markdown("<div class='section-header'>Step 2: Master Database Setup</div>", unsafe_allow_html=True)
+
+uploaded_master_file = None
+master_source = None
+
+if is_local_mode:
+    if os.path.exists(master_path_input):
+        st.success(f"Master Database detected at: `{master_path_input}`")
+        master_source = master_path_input
+    else:
+        st.error(f"Master database not found at `{master_path_input}`. Please correct the path in the sidebar.")
+else:
+    uploaded_master_file = st.file_uploader("Choose the Historical Master Database File (.xlsx)", type=["xlsx"])
+    if uploaded_master_file is not None:
+        st.success("Historical Master Database loaded in memory.")
+        master_source = uploaded_master_file
+    else:
+        st.warning("Please upload the Historical Master Database File (`Survey 2022-2025 Data Source.xlsx`) to continue.")
+
+if master_source is not None:
     try:
-        xls = pd.ExcelFile(master_path_input)
+        xls = load_xls_safely(master_source)
         sheet_names = xls.sheet_names
         
         # Display sheet summary
         col_s1, col_s2, col_s3, col_s4, col_s5 = st.columns(5)
         sheets_info = {}
         for name in sheet_names:
-            # Quick read of row count only to be fast
             df_s = pd.read_excel(xls, name, nrows=1)
             sheets_info[name] = df_s.shape[1]
             
-        # Display nicely in columns
         with col_s1:
             st.metric("Comparison Sheet Cols", sheets_info.get("Comparison", "N/A"))
         with col_s2:
@@ -278,13 +312,11 @@ if os.path.exists(master_path_input):
             
     except Exception as e:
         st.error(f"Error analyzing master database: {e}")
-else:
-    st.error(f"Master database not found at `{master_path_input}`. Please correct the path in the sidebar configuration.")
 
-# Dry run / Validation section
+# Step 3: Validate and Dry Run
 st.markdown("<div class='section-header'>Step 3: Validate and Dry Run</div>", unsafe_allow_html=True)
 
-if st.session_state.raw_preview is not None and os.path.exists(master_path_input):
+if st.session_state.raw_preview is not None and master_source is not None:
     if st.button("Run Validation (Dry Run)", type="primary"):
         with st.spinner("Processing surveys and mapping structures..."):
             try:
@@ -336,7 +368,6 @@ if st.session_state.raw_preview is not None and os.path.exists(master_path_input
                             # Comparison structure (Unpivoted)
                             age_comp = clean_val(row.iloc[2], split_slash=False, age_normalize=True)
                             for q_idx, q_name in enumerate(q_cols):
-                                # Naming Quirk
                                 if q_idx == 0:
                                     mapped_q = "Knowledgable about the sport"
                                 elif q_idx == 1:
@@ -482,7 +513,6 @@ if st.session_state.dry_run_completed:
         
     with col_v2:
         st.markdown("#### Sports Medicine Average Ratings by Service")
-        # Exclude zeros for average calculation if desired, or keep as is
         med_avgs = []
         for s in med_services:
             avg_rating = st.session_state.med_piv_preview[s["name"]].mean()
@@ -491,21 +521,25 @@ if st.session_state.dry_run_completed:
         st.bar_chart(df_med_avgs.set_index("Service"))
 
     # Step 4: Write back to master database
-    st.markdown("<div class='section-header'>Step 4: Execute Write & Save to Master Database</div>", unsafe_allow_html=True)
+    st.markdown("<div class='section-header'>Step 4: Execute Write & Save</div>", unsafe_allow_html=True)
     
-    st.warning("⚠️ Clicking the button below will modify the target Excel file in-place. A backup file will be created automatically in the same folder.")
-    
+    if is_local_mode:
+        st.warning("⚠️ Clicking the button below will modify the target Excel file in-place on your computer. A backup file will be created automatically in the same folder.")
+    else:
+        st.info("ℹ️ Running in cloud mode. Clicking the button below will update the workbook in memory and provide a download link.")
+        
     if st.button("Process & Append to Master Database", type="secondary"):
         with st.spinner("Executing database update..."):
             try:
-                # 1. Create backup
-                timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-                backup_path = f"{master_path_input}.bak_{timestamp_str}"
-                shutil.copy(master_path_input, backup_path)
-                st.info(f"Created backup file: `{backup_path}`")
+                # 1. Backup if local
+                if is_local_mode:
+                    timestamp_str = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                    backup_path = f"{master_path_input}.bak_{timestamp_str}"
+                    shutil.copy(master_path_input, backup_path)
+                    st.info(f"Created backup file: `{backup_path}`")
                 
-                # 2. Open workbook with openpyxl
-                wb = openpyxl.load_workbook(master_path_input)
+                # 2. Open workbook with openpyxl safely
+                wb = load_wb_safely(master_source)
                 
                 # Appending Form Responses 1 (first 8 demographics columns)
                 ws_fr = wb["Form Responses 1"]
@@ -533,7 +567,6 @@ if st.session_state.dry_run_completed:
                 start_row = get_true_max_row(ws_spsc) + 1
                 for _, row in st.session_state.spsc_piv_preview.iterrows():
                     for c_idx, h in enumerate(spsc_headers, 1):
-                        # Convert Timestamp to pandas datetime if necessary, or just save
                         val = row.get(h, None)
                         if isinstance(val, pd.Timestamp):
                             val = val.to_pydatetime()
@@ -594,20 +627,35 @@ if st.session_state.dry_run_completed:
                     start_row += 1
                 st.success(f"Appended {len(st.session_state.med_unpiv_preview)} rows to 'Comparison Sport Med'.")
                 
-                # Save Workbook
-                wb.save(master_path_input)
-                st.balloons()
-                st.success("Master database updated successfully in-place!")
-                
-                # Offer file for download
-                with open(master_path_input, "rb") as f:
-                    file_bytes = f.read()
-                st.download_button(
-                    label="📥 Download Updated Database Workbook",
-                    data=file_bytes,
-                    file_name=os.path.basename(master_path_input),
-                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                )
+                # Save Workbook based on Mode
+                if is_local_mode:
+                    wb.save(master_path_input)
+                    st.balloons()
+                    st.success("Master database updated successfully in-place!")
+                    
+                    with open(master_path_input, "rb") as f:
+                        file_bytes = f.read()
+                    st.download_button(
+                        label="📥 Download Updated Database Workbook",
+                        data=file_bytes,
+                        file_name=os.path.basename(master_path_input),
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
+                else:
+                    # Save to bytes stream
+                    buffer = io.BytesIO()
+                    wb.save(buffer)
+                    file_bytes = buffer.getvalue()
+                    
+                    st.balloons()
+                    st.success("Database processed and updated in memory successfully!")
+                    
+                    st.download_button(
+                        label="📥 Download Updated Database Workbook",
+                        data=file_bytes,
+                        file_name="Survey_2022-2026_Updated_Data_Source.xlsx",
+                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                    )
                 
             except Exception as e:
                 st.error(f"Error during file append execution: {e}")
